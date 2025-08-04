@@ -1,44 +1,53 @@
-FROM steamcmd/steamcmd:alpine-3
+ARG CUDA_IMAGE_TAG
+FROM nvidia/cuda:${CUDA_IMAGE_TAG}
 
-# Install prerequisites
-RUN apk update \
- && apk add --no-cache bash curl tmux libstdc++ libgcc icu-libs \
- && rm -rf /var/cache/apk/*
+# 避免安装时出现交互选项阻塞
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Fix 32 and 64 bit library conflicts
-RUN mkdir /steamlib \
- && mv /lib/libstdc++.so.6 /steamlib \
- && mv /lib/libgcc_s.so.1 /steamlib
-ENV LD_LIBRARY_PATH /steamlib
+# 安装基础软件
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    aria2 \
+    build-essential \
+    cmake \
+    curl \
+    git \
+    jq \
+    ssh \
+    sudo \
+    vim \
+    wget \
+    && rm -rf "/var/lib/apt/lists/*"
 
-# Set a specific tModLoader version, defaults to the latest Github release
-ARG TML_VERSION
+# 安装CUDA依赖库
+ARG CUDA_KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb"
+ARG CUDA_KEYRING_FILE="/tmp/cuda-keyring.deb"
+RUN rm "/etc/apt/sources.list.d/cuda.list" \
+    && wget -O "${CUDA_KEYRING_FILE}" "${CUDA_KEYRING_URL}" \
+    && dpkg --install "${CUDA_KEYRING_FILE}" \
+    && apt-get update && apt-get install --no-install-recommends -y \
+    libcusparselt0 libcusparselt-dev \
+    && rm -rf "/var/lib/apt/lists/*"
 
-# Create tModLoader user and drop root permissions
+# 强制修改ubuntu用户的用户名及UID/GID，并赋予免密sudo权限
+ARG USERNAME
 ARG UID
-ARG GID
-RUN addgroup -g $GID tml \
- && adduser tml -u $UID -G tml -h /home/tml -D
+ARG GID=${UID}
+RUN usermod -l "${USERNAME}" ubuntu \
+    && usermod -u "${UID}" "${USERNAME}" \
+    && usermod -d /home/"${USERNAME}" -m "${USERNAME}" \
+    && usermod -aG sudo "${USERNAME}" \
+    && echo "%sudo ALL=(ALL) NOPASSWD:ALL" >> "/etc/sudoers.d/${USERNAME}"
 
-USER tml
-ENV USER tml
-ENV HOME /home/tml
-WORKDIR $HOME
+# 切换至普通用户模式
+USER ${USERNAME}
 
-# Update SteamCMD and verify latest version
-RUN steamcmd +quit
+# 安装UV
+RUN curl -LsSf "https://astral.sh/uv/install.sh" | sh
 
-ADD --chown=tml:tml https://raw.githubusercontent.com/tModLoader/tModLoader/1.4.4/patches/tModLoader/Terraria/release_extras/DedicatedServerUtils/manage-tModLoaderServer.sh .
+# 安装hfd.sh
+RUN mkdir -p "${HOME}/.local/bin" \
+    && wget -O "${HOME}/.local/bin/hfd" "https://hf-mirror.com/hfd/hfd.sh" \
+    && chmod +x "${HOME}/.local/bin/hfd"
 
-# If you need to make local edits to the management script copy it to the same
-# directory as this file, comment out the above line and uncomment this line:
-# COPY --chown=tml:tml manage-tModLoaderServer.sh .
-
-# Make management script executable. Fixes "Permission Denied" error on some systems.
-RUN chmod +x manage-tModLoaderServer.sh
-
-RUN ./manage-tModLoaderServer.sh install-tml --github --tml-version $TML_VERSION
-
-EXPOSE 7777
-
-ENTRYPOINT [ "./manage-tModLoaderServer.sh", "docker", "--folder", "/home/tml/.local/share/Terraria/tModLoader" ]
+# 设置bash为默认shell
+SHELL ["/bin/bash", "-c"]
